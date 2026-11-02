@@ -10,7 +10,7 @@
 #define FINISHED_FRACTION 0.92f
 #define SEPARATOR '\t'
 
-struct settings settings = {QUALITY_DEFAULT, 1, 0, 0, 0};
+struct settings settings = {.quality = QUALITY_DEFAULT, .subtitles = 1, .autoplay = 1};
 struct history_entry history[HISTORY_MAX];
 int history_count;
 struct saved_show mylist[MYLIST_MAX];
@@ -93,6 +93,8 @@ static void load_settings(void)
 			settings.installed = v != 0;
 		else if (strcmp(fields[0], "play_first_unwatched") == 0)
 			settings.play_first_unwatched = v != 0;
+		else if (strcmp(fields[0], "autoplay") == 0)
+			settings.autoplay = v != 0;
 	}
 	fclose(f);
 }
@@ -103,9 +105,9 @@ int settings_save(void)
 	FILE *f = begin_write("settings.txt", temp, sizeof(temp));
 	if (!f)
 		return -1;
-	fprintf(f, "quality\t%d\nsubtitles\t%d\nexperimental_1080\t%d\ninstalled\t%d\nplay_first_unwatched\t%d\n",
+	fprintf(f, "quality\t%d\nsubtitles\t%d\nexperimental_1080\t%d\ninstalled\t%d\nplay_first_unwatched\t%d\nautoplay\t%d\n",
 	        settings.quality, settings.subtitles, settings.experimental_1080, settings.installed,
-	        settings.play_first_unwatched);
+	        settings.play_first_unwatched, settings.autoplay);
 	return end_write(f, temp, "settings.txt");
 }
 

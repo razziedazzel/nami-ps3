@@ -8,7 +8,7 @@ firmware. It runs entirely on the console, with no server or helper PC.
 - Browse rows of shows with posters, and search with an on-screen keyboard and live results
 - Hardware-accelerated H.264 playback, with subtitles, seeking and sub or dub audio
 - Continue watching, My List, per-episode watched marks and resume
-- Season selector, skip intro and automatic next episode
+- Season selector, skip intro, and autoplay of the next episode after a 10-second countdown (optional)
 - 480p by default, or 720p in Settings
 - Controller support, with Blu-ray remote support written but not yet tested
 - Update check against this repository's releases

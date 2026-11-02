@@ -95,6 +95,7 @@
 #define SEEK_LONG 60.0f
 #define SEEK_SETTLE_FRAMES 40
 #define OVERLAY_FRAMES 240
+#define NEXT_COUNTDOWN_FRAMES 600 /* 10 seconds at 60 frames a second */
 #define HISTORY_SAVE_FRAMES 1800
 #define HISTORY_UPDATE_FRAMES 120
 #define MIN_POSITION_TO_RESUME 5.0f
@@ -115,8 +116,8 @@
 #define KEY_GAP 3.0f
 #define KEYBOARD_Y 104.0f
 #define RESULTS_X 372.0f
-#define SETTINGS_ROWS 8
-#define SETTINGS_ROW_H 38.0f
+#define SETTINGS_ROWS 9
+#define SETTINGS_ROW_H 34.0f
 #define SETTINGS_W 560.0f
 #define PATH_MAX_LEN 128
 
@@ -205,6 +206,7 @@ static int cache_files_removed;
 /* The player. */
 static int player_episode;
 static int player_ended;
+static int player_countdown; /* Frames until the next episode starts, or 0 for none */
 static int player_seek_frames;
 static float player_seek_target;
 static int player_overlay_frames;
@@ -1628,6 +1630,7 @@ static void start_episode(int index, float seconds)
 	options.allow_too_tall = settings.experimental_1080;
 	player_episode = index;
 	player_ended = 0;
+	player_countdown = 0;
 	player_seek_frames = 0;
 	player_overlay_frames = OVERLAY_FRAMES;
 	player_history_frames = 0;
@@ -2022,9 +2025,12 @@ static int player_in_intro(float *end)
 static void update_player(void)
 {
 	if (player_ended) {
-		if (input_pressed(ACT_OK) || input_pressed(ACT_BACK)) {
+		int has_next = !video_failure() && player_episode + 1 < episode_count;
+		if (input_pressed(ACT_BACK) || input_pressed(ACT_STOP) || (input_pressed(ACT_OK) && !has_next)) {
 			video_stop();
 			screen = SCREEN_DETAILS;
+		} else if (has_next && (input_pressed(ACT_OK) || (player_countdown > 0 && --player_countdown == 0))) {
+			player_change_episode(player_episode + 1);
 		}
 		return;
 	}
@@ -2149,16 +2155,12 @@ static void draw_player(void)
 	gfx_begin_frame(0x000000FF);
 	int done = player_ended ? 1 : video_frame();
 	if (done && !player_ended) {
-		/* The end of an episode rolls on to the next. */
-		if (!video_failure() && player_episode + 1 < episode_count) {
-			stage("flip");
-			gfx_end_frame();
-			player_change_episode(player_episode + 1);
-			return;
-		}
+		/* Marked now, so it counts even if the next one is never started. */
 		if (!video_failure())
 			player_record(1);
 		player_ended = 1;
+		if (!video_failure() && player_episode + 1 < episode_count && settings.autoplay)
+			player_countdown = NEXT_COUNTDOWN_FRAMES;
 	}
 
 	char line[64];
@@ -2167,14 +2169,27 @@ static void draw_player(void)
 	if (player_ended) {
 		const char *reason = video_failure();
 		gfx_text(details.title, MARGIN_X, 200, TEXT_TITLE, COLOR_TEXT);
-		gfx_text_wrapped(reason ? failure_text(reason) : "That's the latest episode.", MARGIN_X, 230, SCREEN_W - 2 * MARGIN_X, 2,
+		int has_next = !reason && player_episode + 1 < episode_count;
+		char next[96];
+		if (has_next && player_countdown > 0)
+			snprintf(next, sizeof(next), "Episode %s starts in %d", episodes[player_episode + 1].number,
+			         (player_countdown + 59) / 60);
+		else if (has_next)
+			snprintf(next, sizeof(next), "Next is episode %s", episodes[player_episode + 1].number);
+		else
+			snprintf(next, sizeof(next), "That's the latest episode.");
+		gfx_text_wrapped(reason ? failure_text(reason) : next, MARGIN_X, 230, SCREEN_W - 2 * MARGIN_X, 2,
 		                 TEXT_BODY, COLOR_MUTED);
 		if (reason) {
 			char code[64];
 			snprintf(code, sizeof(code), "Error: %s", reason);
 			gfx_text(code, MARGIN_X, 280, TEXT_SMALL, COLOR_MUTED);
 		}
-		draw_hint(input_last_device() == 2 ? "Return Back" : ICON_CIRCLE " Back");
+		if (has_next)
+			draw_hint(input_last_device() == 2 ? "Enter Play now    Return Back"
+			                                   : ICON_CROSS " Play now    " ICON_CIRCLE " Back");
+		else
+			draw_hint(input_last_device() == 2 ? "Return Back" : ICON_CIRCLE " Back");
 	} else if (video_seeking()) {
 		/* The last picture stays up, with the time being jumped to. */
 		draw_player_overlay();
@@ -2226,14 +2241,18 @@ static void settings_row_text(int i, const char **label, char *value, size_t siz
 		snprintf(value, size, "%s", settings.play_first_unwatched ? "First unwatched" : "Latest watched");
 		break;
 	case 4:
+		*label = "Autoplay next episode";
+		snprintf(value, size, "%s", settings.autoplay ? "On" : "Off");
+		break;
+	case 5:
 		*label = "Clear poster cache";
 		snprintf(value, size, "%s", clear_cache_requested ? "Clearing..." : "");
 		break;
-	case 5:
+	case 6:
 		*label = "Clear watch history";
 		snprintf(value, size, "%d shows", history_count);
 		break;
-	case 6:
+	case 7:
 		*label = "Set up Home posters again";
 		snprintf(value, size, "%s", "");
 		break;
@@ -2282,18 +2301,82 @@ static void update_settings(void)
 		settings.play_first_unwatched = !settings.play_first_unwatched;
 		break;
 	case 4:
+		*label = "Play button offers";
+		snprintf(value, size, "%s", settings.play_first_unwatched ? "First unwatched" : "Latest watched");
+		break;
+	case 4:
+		*label = "Autoplay next episode";
+		snprintf(value, size, "%s", settings.autoplay ? "On" : "Off");
+		break;
+	case 5:
+		*label = "Clear poster cache";
+		snprintf(value, size, "%s", clear_cache_requested ? "Clearing..." : "");
+		break;
+	case 6:
+		*label = "Clear watch history";
+		snprintf(value, size, "%d shows", history_count);
+		break;
+	case 7:
+		*label = "Set up Home posters again";
+		snprintf(value, size, "%s", "");
+		break;
+	default:
+		*label = "Version " APP_VERSION_NAME " - Check for updates";
+		switch (update_state) {
+		case UPDATE_CHECKING: snprintf(value, size, "Checking..."); break;
+		case UPDATE_CURRENT: snprintf(value, size, "Up to date"); break;
+		case UPDATE_AVAILABLE: snprintf(value, size, "Get %s", update_info.version_name); break;
+		case UPDATE_DOWNLOADING: snprintf(value, size, "Downloading..."); break;
+		case UPDATE_READY: snprintf(value, size, "Ready to install"); break;
+		case UPDATE_CHECK_FAILED: snprintf(value, size, "Couldn't check"); break;
+		case UPDATE_DOWNLOAD_FAILED: snprintf(value, size, "Download failed"); break;
+		default: snprintf(value, size, "%s", ""); break;
+		}
+		break;
+	}
+}
+
+static void update_settings(void)
+{
+	if (input_pressed(ACT_BACK)) {
+		settings_save();
+		rebuild_saved_rows();
+		screen = SCREEN_HOME;
+		return;
+	}
+	if (input_pressed(ACT_UP) && settings_focus > 0)
+		settings_focus--;
+	if (input_pressed(ACT_DOWN) && settings_focus + 1 < SETTINGS_ROWS)
+		settings_focus++;
+	int change = input_pressed(ACT_OK) || input_pressed(ACT_LEFT) || input_pressed(ACT_RIGHT);
+	if (!change)
+		return;
+	switch (settings_focus) {
+	case 0:
+		settings.quality = settings.quality == QUALITY_DEFAULT ? QUALITY_HIGH : QUALITY_DEFAULT;
+		break;
+	case 1:
+		settings.subtitles = !settings.subtitles;
+		break;
+	case 2:
+		settings.experimental_1080 = !settings.experimental_1080;
+		break;
+	case 4:
+		settings.autoplay = !settings.autoplay;
+		break;
+	case 5:
 		if (input_pressed(ACT_OK)) {
 			clear_cache_requested = 1;
 			show_status("Posters will be downloaded again as needed.");
 		}
 		break;
-	case 5:
+	case 6:
 		if (input_pressed(ACT_OK)) {
 			history_clear();
 			show_status("Watch history cleared.");
 		}
 		break;
-	case 6:
+	case 7:
 		if (input_pressed(ACT_OK)) {
 			settings.installed = 0;
 			show_status("This runs the next time Nami starts.");
@@ -2333,11 +2416,14 @@ static void draw_settings(void)
 	if (settings_focus == 0)
 		gfx_text_wrapped("480p is the default. If a show doesn't have the chosen quality, the nearest one it has at 720p or below plays.",
 		                 MARGIN_X, y + 8, SETTINGS_W, 3, TEXT_SMALL, COLOR_MUTED);
-	else if (settings_focus == 7 && update_state == UPDATE_READY)
+	else if (settings_focus == 8 && update_state == UPDATE_READY)
 		gfx_text_wrapped("The new version is downloaded but not installed. Exit Nami, then go to Package Manager > Install Package Files > Standard and install it.",
 		                 MARGIN_X, y + 8, SETTINGS_W, 3, TEXT_SMALL, COLOR_MUTED);
-	else if (settings_focus == 7 && update_state == UPDATE_AVAILABLE)
+	else if (settings_focus == 8 && update_state == UPDATE_AVAILABLE)
 		gfx_text_wrapped(update_info.notes[0] ? update_info.notes : "A new version is available. Press X to download it.",
+		                 MARGIN_X, y + 8, SETTINGS_W, 3, TEXT_SMALL, COLOR_MUTED);
+	else if (settings_focus == 4)
+		gfx_text_wrapped("When an episode ends, the next one starts after a 10 second countdown. Off waits for you to press X.",
 		                 MARGIN_X, y + 8, SETTINGS_W, 3, TEXT_SMALL, COLOR_MUTED);
 	else if (settings_focus == 3)
 		gfx_text_wrapped("Latest watched continues from the most recent episode you played. First unwatched goes to the earliest episode you haven't finished.",

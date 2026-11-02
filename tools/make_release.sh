@@ -16,6 +16,9 @@ grep -q "APP_VERSION_CODE $code\$" "$config" || { echo "config.h has a different
 grep -q "APP_VERSION_NAME \"$name\"\$" "$config" || { echo "config.h has a different version name" >&2; exit 1; }
 [[ $name =~ ^[0-9A-Za-z.-]+$ ]] || { echo "the version name must be plain characters" >&2; exit 1; }
 
+# The app ignores notes longer than this (UPDATE_NOTES_MAX).
+(( ${#notes} < 160 )) || { echo "notes must be under 160 characters" >&2; exit 1; }
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 asset=$work/Nami-PS3-$name.pkg

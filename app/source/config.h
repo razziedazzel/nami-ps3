@@ -4,8 +4,8 @@
 #define APP_DIR "/dev_hdd0/game/ANIMEPS30/USRDIR/"
 
 /* Raise the code with each release: it's what the update check compares. */
-#define APP_VERSION_CODE 1
-#define APP_VERSION_NAME "0.1.0"
+#define APP_VERSION_CODE 2
+#define APP_VERSION_NAME "0.1.1"
 
 #define SCREEN_W 848.0f
 #define SCREEN_H 512.0f

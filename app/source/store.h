@@ -21,6 +21,7 @@ struct settings {
 	int subtitles;         /* shown when available */
 	int experimental_1080; /* try 1080p-only shows, with corruption */
 	int installed;         /* the first-run poster install is done */
+	int autoplay; /* The next episode starts by itself after a countdown */
 	int play_first_unwatched; /* Play offers the earliest unfinished episode, not the latest watched */
 };
 
