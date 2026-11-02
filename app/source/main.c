@@ -2301,67 +2301,6 @@ static void update_settings(void)
 		settings.play_first_unwatched = !settings.play_first_unwatched;
 		break;
 	case 4:
-		*label = "Play button offers";
-		snprintf(value, size, "%s", settings.play_first_unwatched ? "First unwatched" : "Latest watched");
-		break;
-	case 4:
-		*label = "Autoplay next episode";
-		snprintf(value, size, "%s", settings.autoplay ? "On" : "Off");
-		break;
-	case 5:
-		*label = "Clear poster cache";
-		snprintf(value, size, "%s", clear_cache_requested ? "Clearing..." : "");
-		break;
-	case 6:
-		*label = "Clear watch history";
-		snprintf(value, size, "%d shows", history_count);
-		break;
-	case 7:
-		*label = "Set up Home posters again";
-		snprintf(value, size, "%s", "");
-		break;
-	default:
-		*label = "Version " APP_VERSION_NAME " - Check for updates";
-		switch (update_state) {
-		case UPDATE_CHECKING: snprintf(value, size, "Checking..."); break;
-		case UPDATE_CURRENT: snprintf(value, size, "Up to date"); break;
-		case UPDATE_AVAILABLE: snprintf(value, size, "Get %s", update_info.version_name); break;
-		case UPDATE_DOWNLOADING: snprintf(value, size, "Downloading..."); break;
-		case UPDATE_READY: snprintf(value, size, "Ready to install"); break;
-		case UPDATE_CHECK_FAILED: snprintf(value, size, "Couldn't check"); break;
-		case UPDATE_DOWNLOAD_FAILED: snprintf(value, size, "Download failed"); break;
-		default: snprintf(value, size, "%s", ""); break;
-		}
-		break;
-	}
-}
-
-static void update_settings(void)
-{
-	if (input_pressed(ACT_BACK)) {
-		settings_save();
-		rebuild_saved_rows();
-		screen = SCREEN_HOME;
-		return;
-	}
-	if (input_pressed(ACT_UP) && settings_focus > 0)
-		settings_focus--;
-	if (input_pressed(ACT_DOWN) && settings_focus + 1 < SETTINGS_ROWS)
-		settings_focus++;
-	int change = input_pressed(ACT_OK) || input_pressed(ACT_LEFT) || input_pressed(ACT_RIGHT);
-	if (!change)
-		return;
-	switch (settings_focus) {
-	case 0:
-		settings.quality = settings.quality == QUALITY_DEFAULT ? QUALITY_HIGH : QUALITY_DEFAULT;
-		break;
-	case 1:
-		settings.subtitles = !settings.subtitles;
-		break;
-	case 2:
-		settings.experimental_1080 = !settings.experimental_1080;
-		break;
-	case 4:
 		settings.autoplay = !settings.autoplay;
 		break;
 	case 5:
