@@ -1,7 +1,6 @@
 # Nami
 
-Nami (波, "wave") is a native anime browsing and streaming app for the PlayStation 3, for consoles running custom
-firmware. It runs entirely on the console, with no server or helper PC.
+Nami (波, "wave") is a native anime browsing and streaming app for the PlayStation 3. It runs entirely on the console.
 
 ## Features
 
