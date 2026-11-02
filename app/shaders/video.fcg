@@ -1,0 +1,13 @@
+/* Video pictures as the decoder gives them, three planes of YUV, converted to RGB here (BT.709). */
+void main(float4 color : COLOR0,
+          float2 texcoord : TEXCOORD0,
+          uniform sampler2D texture_y,
+          uniform sampler2D texture_u,
+          uniform sampler2D texture_v,
+          out float4 oColor : COLOR0)
+{
+	float y = (tex2D(texture_y, texcoord).x - 0.0625) * 1.164;
+	float u = tex2D(texture_u, texcoord).x - 0.5;
+	float v = tex2D(texture_v, texcoord).x - 0.5;
+	oColor = float4(y + 1.793 * v, y - 0.213 * u - 0.533 * v, y + 2.112 * u, 1.0) * color;
+}

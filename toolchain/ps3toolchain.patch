@@ -1,0 +1,37 @@
+diff --git a/scripts/002-gcc-newlib-PPU.sh b/scripts/002-gcc-newlib-PPU.sh
+index b6166ec..5b85ea2 100755
+--- a/scripts/002-gcc-newlib-PPU.sh
++++ b/scripts/002-gcc-newlib-PPU.sh
+@@ -35,6 +35,9 @@ if [ ! -d ${GCC} ]; then
+   ## Patch the source code.
+   cat ../patches/${GCC}-PS3.patch | patch -p1 -d ${GCC}
+ 
++  ## Host libstdc++ 16: include these before safe-ctype.h defines its ctype macros.
++  sed -i '/^#include "safe-ctype.h"/i #ifdef __cplusplus\n# include <memory>\n# include <mutex>\n# include <sstream>\n#endif' ${GCC}/gcc/system.h
++
+   ## Replace config.guess and config.sub
+   cp ../archives/config.guess ../archives/config.sub ${GCC}
+ 
+diff --git a/scripts/006-gcc-newlib-SPU.sh b/scripts/006-gcc-newlib-SPU.sh
+index 625abf9..d93b48e 100755
+--- a/scripts/006-gcc-newlib-SPU.sh
++++ b/scripts/006-gcc-newlib-SPU.sh
+@@ -35,6 +35,9 @@ if [ ! -d ${GCC} ]; then
+   ## Patch the source code.
+   cat ../patches/${GCC}-PS3.patch | patch -p1 -d ${GCC}
+ 
++  ## Host libstdc++ 16: include these before safe-ctype.h defines its ctype macros.
++  sed -i '/^#include "safe-ctype.h"/i #ifdef __cplusplus\n# include <memory>\n# include <mutex>\n# include <sstream>\n#endif' ${GCC}/gcc/system.h
++
+   ## Replace config.guess and config.sub
+   cp ../archives/config.guess ../archives/config.sub ${GCC}
+ 
+@@ -46,6 +49,8 @@ if [ ! -d ${GCC} ]; then
+   ln -s ../${NEWLIB}/libgloss libgloss
+ 
+   ## Download the prerequisites.
++  ## GCC 9.5 defaults to FTP, which fails here; the same files are served over HTTPS.
++  sed -i "s|^base_url='ftp://|base_url='https://|" contrib/download_prerequisites
+   ./contrib/download_prerequisites
+ 
+   ## Leave the source code directory.
