@@ -17,7 +17,9 @@ Nami (波, "wave") is a native anime browsing and streaming app for the PlayStat
 - The PS3's H.264 decoder can't correctly play the 5-reference 1080p streams most sources use, so
   shows with only 1080p aren't available by default. **Settings > Experimental 1080p** plays them
   with visible corruption.
-- It depends on a third-party website, and will stop working when that site changes until it's updated.
+- It depends on third-party websites, and will stop working when they change until it's updated. If
+  one site is down it moves to its mirrors by itself, checks Anikoto's official domain list once a day
+  for new addresses, and falls back to AnimeSuge (the same shows) if every Anikoto site is down.
 - Tested on one console, on Evilnat 4.91 with Cobra 8.5.
 
 This project hosts no video. It isn't affiliated with Sony or with any site it reads from.
@@ -43,6 +45,11 @@ FAT32 USB stick or in `/dev_hdd0/packages/`, and install it from
 | Player | L1 / R1 | Previous / next episode |
 | Player | Triangle / Square | Subtitles / skip intro |
 | Anywhere | Circle | Back |
+
+## Testing the site code
+
+`tools/sitetest/run.sh` builds the app's site code (`sites.c`, `catalog.c`, `resolve.c`) for a PC and
+runs it against the live sites, including with Anikoto parked or down. It needs gcc, curl and mbedtls.
 
 ## Building
 

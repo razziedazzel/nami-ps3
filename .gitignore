@@ -26,3 +26,6 @@
 !tools/*.sh
 !toolchain/
 !toolchain/*.patch
+!tools/sitetest/
+!tools/sitetest/*.c
+!tools/sitetest/*.sh

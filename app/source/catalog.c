@@ -1,5 +1,7 @@
 #include "catalog.h"
+#include "sites.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +45,8 @@ static void copy_title(const char *src, size_t len, char *out, size_t size)
 	out[n] = 0;
 }
 
+static void copy_plain(const char *src, size_t len, char *out, size_t size);
+
 static int copy_attr(const char *from, const char *limit, const char *name, char *out, size_t size)
 {
 	const char *p = strstr(from, name);
@@ -68,8 +72,72 @@ static int count_after(const char *from, const char *limit, const char *marker)
 	return atoi(p);
 }
 
-int catalog_parse_list(const char *html, struct anime_item *items, int max)
+/* A count after marker, past any tags in between (AnimeSuge puts an icon first). */
+static int count_after_tags(const char *from, const char *limit, const char *marker)
 {
+	const char *p = strstr(from, marker);
+	if (!p || (limit && p >= limit))
+		return 0;
+	p += strlen(marker);
+	for (;;) {
+		while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
+			p++;
+		if (*p != '<' || p[1] == '/')
+			break;
+		const char *close = strchr(p, '>');
+		if (!close)
+			return 0;
+		/* Skip a whole <svg>...</svg>. */
+		if (strncmp(p, "<svg", 4) == 0) {
+			const char *end = strstr(p, "</svg>");
+			close = end ? end + 5 : close;
+		}
+		p = close + 1;
+	}
+	return atoi(p);
+}
+
+/* AnimeSuge's /filter page: cards in .main-card, title in .name > a, lazy images with a real src. */
+static int parse_suge_list(const char *html, struct anime_item *items, int max)
+{
+	static const char item_marker[] = "<div class=\"item\">";
+	const char *p = strstr(html, "main-card");
+	int count = 0;
+	if (!p)
+		return 0;
+	p = strstr(p, item_marker);
+	while (p && count < max) {
+		const char *next = strstr(p + 1, item_marker);
+		struct anime_item *it = &items[count];
+		memset(it, 0, sizeof(*it));
+		const char *img = strstr(p, "<img");
+		const char *img_end = img ? strchr(img, '>') : NULL;
+		const char *name = strstr(p, "class=\"name\"");
+		const char *link = name ? strstr(name, "<a ") : NULL;
+		const char *text = link ? strchr(link, '>') : NULL;
+		const char *text_end = text ? strstr(text, "</a>") : NULL;
+		if (img_end && text_end && (!next || text_end < next) &&
+		    copy_attr(link, text, "href=\"", it->watch_url, sizeof(it->watch_url)) == 0 &&
+		    copy_attr(p, next, "data-tip=\"", it->id, sizeof(it->id)) == 0 &&
+		    copy_attr(img, img_end, " src=\"", it->poster_url, sizeof(it->poster_url)) == 0) {
+			copy_plain(text + 1, (size_t)(text_end - text - 1), it->title, sizeof(it->title));
+			char *ep = strstr(it->watch_url, "/ep-");
+			if (ep)
+				*ep = 0;
+			it->sub_count = count_after_tags(p, next, "class=\"sub\">");
+			it->dub_count = count_after_tags(p, next, "class=\"dub\">");
+			count++;
+		}
+		p = next;
+	}
+	return count;
+}
+
+int catalog_parse_list(const char *html, int layout, struct anime_item *items, int max)
+{
+	if (layout == LAYOUT_SUGE)
+		return parse_suge_list(html, items, max);
+
 	static const char item_marker[] = "<div class=\"item";
 	const char *p = strstr(html, "id=\"list-items\"");
 	int count = 0;
@@ -102,6 +170,32 @@ int catalog_parse_list(const char *html, struct anime_item *items, int max)
 		p = next;
 	}
 	return count;
+}
+
+/* Lowercase, with runs of spaces made one and none at the ends. */
+static void title_key(const char *s, char *out, size_t size)
+{
+	size_t n = 0;
+	int space = 1;
+	for (; *s && n + 1 < size; s++) {
+		if (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+			space = 1;
+			continue;
+		}
+		if (space && n > 0 && n + 2 < size)
+			out[n++] = ' ';
+		space = 0;
+		out[n++] = (char)tolower((unsigned char)*s);
+	}
+	out[n] = 0;
+}
+
+int catalog_same_title(const char *a, const char *b)
+{
+	char ka[ITEM_TITLE_MAX * 2], kb[ITEM_TITLE_MAX * 2];
+	title_key(a, ka, sizeof(ka));
+	title_key(b, kb, sizeof(kb));
+	return ka[0] && strcmp(ka, kb) == 0;
 }
 
 void catalog_json_unescape(char *s)
@@ -189,9 +283,46 @@ static void copy_meta(const char *panel, const char *label, char *out, size_t si
 		copy_plain(start + 1, (size_t)(end - start - 1), out, size);
 }
 
-int catalog_parse_details(const char *html, struct anime_details *out)
+/* AnimeSuge's show page: #media-info, with "Genre:" and the id on the rating box. */
+static int parse_suge_details(const char *html, struct anime_details *out)
+{
+	const char *box = strstr(html, "class=\"rating-box\"");
+	if (box)
+		copy_attr(box, strchr(box, '>'), "data-id=\"", out->id, sizeof(out->id));
+	if (!out->id[0]) {
+		const char *api = strstr(html, "api/seasons/");
+		if (api)
+			snprintf(out->id, sizeof(out->id), "%.*s", (int)strspn(api + 12, "0123456789"), api + 12);
+	}
+	const char *panel = strstr(html, "id=\"media-info\"");
+	if (!panel)
+		return -1;
+	const char *poster = strstr(panel, "class=\"poster\"");
+	if (poster)
+		copy_attr(poster, NULL, "src=\"", out->poster_url, sizeof(out->poster_url));
+	if (copy_element_text(panel, "<h1", "</h1>", out->title, sizeof(out->title)) != 0)
+		return -1;
+	const char *full = strstr(panel, "data-name=\"full\"");
+	if (!full)
+		full = strstr(panel, "data-name=\"short\"");
+	if (full)
+		copy_element_text(full, "<div>", "</div>", out->synopsis, sizeof(out->synopsis));
+	copy_element_text(panel, "class=\"rating mini-status\"", "</span>", out->rating, sizeof(out->rating));
+	const char *meta = strstr(panel, "class=\"meta\"");
+	if (meta) {
+		copy_meta(meta, "Type:", out->type, sizeof(out->type));
+		copy_meta(meta, "Status:", out->status, sizeof(out->status));
+		copy_meta(meta, "Aired:", out->aired, sizeof(out->aired));
+		copy_meta(meta, "Genre:", out->genres, sizeof(out->genres));
+	}
+	return 0;
+}
+
+int catalog_parse_details(const char *html, int layout, struct anime_details *out)
 {
 	memset(out, 0, sizeof(*out));
+	if (layout == LAYOUT_SUGE)
+		return parse_suge_details(html, out);
 	/* A season's link gives only its address, so the page supplies its ID and poster. */
 	const char *main_tag = strstr(html, "id=\"watch-main\"");
 	if (main_tag) {
@@ -220,8 +351,38 @@ int catalog_parse_details(const char *html, struct anime_details *out)
 	return 0;
 }
 
-int catalog_parse_episodes(const char *html, struct episode *episodes, int max)
+/* AnimeSuge's episode links: the number is in data-slug (data-num holds the title), the title in title. */
+static int parse_suge_episodes(const char *html, struct episode *episodes, int max)
 {
+	int count = 0;
+	const char *p = html;
+	while (count < max && (p = strstr(p, "<a ")) != NULL) {
+		const char *tag_end = strchr(p, '>');
+		if (!tag_end)
+			break;
+		struct episode *e = &episodes[count];
+		memset(e, 0, sizeof(*e));
+		if (copy_attr(p, tag_end, "data-slug=\"", e->number, sizeof(e->number)) == 0 &&
+		    copy_attr(p, tag_end, "data-ids=\"", e->server_ids, sizeof(e->server_ids)) == 0) {
+			char flag[4] = "", title[EPISODE_TITLE_MAX * 2] = "";
+			if (copy_attr(p, tag_end, "data-sub=\"", flag, sizeof(flag)) == 0)
+				e->has_sub = flag[0] == '1';
+			flag[0] = 0;
+			if (copy_attr(p, tag_end, "data-dub=\"", flag, sizeof(flag)) == 0)
+				e->has_dub = flag[0] == '1';
+			if (copy_attr(p, tag_end, " title=\"", title, sizeof(title)) == 0)
+				copy_plain(title, strlen(title), e->title, sizeof(e->title));
+			count++;
+		}
+		p = tag_end;
+	}
+	return count;
+}
+
+int catalog_parse_episodes(const char *html, int layout, struct episode *episodes, int max)
+{
+	if (layout == LAYOUT_SUGE)
+		return parse_suge_episodes(html, episodes, max);
 	int count = 0;
 	const char *p = html;
 	while (count < max && (p = strstr(p, "<a ")) != NULL) {
@@ -253,8 +414,39 @@ int catalog_parse_episodes(const char *html, struct episode *episodes, int max)
 	return count;
 }
 
-int catalog_parse_seasons(const char *html, struct season *seasons, int max)
+/* AnimeSuge: <a href="..." class="swiper-slide active"> ... <span>Season 1</span></a>. */
+static int parse_suge_seasons(const char *html, struct season *seasons, int max)
 {
+	int count = 0;
+	const char *p = strstr(html, "media-season-body");
+	while (p && count < max && (p = strstr(p, "<a ")) != NULL) {
+		const char *tag_end = strchr(p, '>');
+		const char *close = tag_end ? strstr(tag_end, "</a>") : NULL;
+		if (!close)
+			break;
+		struct season *out = &seasons[count];
+		memset(out, 0, sizeof(*out));
+		const char *cls = strstr(p, "swiper-slide");
+		const char *span = strstr(tag_end, "<span>");
+		if (cls && cls < tag_end && span && span < close &&
+		    copy_attr(p, tag_end, "href=\"", out->watch_url, sizeof(out->watch_url)) == 0 &&
+		    copy_element_text(span, "<span>", "</span>", out->name, sizeof(out->name)) == 0) {
+			const char *active = strstr(p, "active");
+			out->current = active && active < tag_end;
+			char *ep = strstr(out->watch_url, "/ep-");
+			if (ep)
+				*ep = 0;
+			count++;
+		}
+		p = close;
+	}
+	return count;
+}
+
+int catalog_parse_seasons(const char *html, int layout, struct season *seasons, int max)
+{
+	if (layout == LAYOUT_SUGE)
+		return parse_suge_seasons(html, seasons, max);
 	static const char marker[] = "swiper-slide season";
 	int count = 0;
 	const char *p = html;

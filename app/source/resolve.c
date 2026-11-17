@@ -1,4 +1,5 @@
 #include "resolve.h"
+#include "sites.h"
 
 #include <mbedtls/aes.h>
 #include <stdarg.h>
@@ -7,8 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SITE "https://anikototv.to"
-#define SITE_REFERER SITE "/"
 /* From megaplay.buzz/lib/app.main.js. If links stop decrypting, check there first. */
 #define ENC_KEY "i?LMTAx0Q6,:}50U"
 #define ENC_IV "W0;27ToaUpl_P%'c"
@@ -283,17 +282,19 @@ static void read_extras(const char *json, struct resolved_stream *out)
 	}
 }
 
-static int try_server(resolve_fetch_fn fetch, void *ctx, const char *link_id,
+static int try_server(resolve_fetch_fn fetch, void *ctx, const char *site, const char *link_id,
                       const struct resolve_options *options, struct resolved_stream *out)
 {
+	char site_referer[SITE_URL_MAX + 2];
+	snprintf(site_referer, sizeof(site_referer), "%.*s/", SITE_URL_MAX - 1, site);
 	char url[RESOLVE_URL_MAX + ID_MAX], embed[RESOLVE_URL_MAX], data_id[32], origin[128];
 	char master_url[RESOLVE_URL_MAX], s_param[16] = "";
 	char *body = NULL;
 	size_t len;
 	int result = -1;
 
-	snprintf(url, sizeof(url), SITE "/ajax/server?get=%s", link_id);
-	if (fetch(ctx, url, SITE_REFERER, 1, &body, &len) != 0) {
+	snprintf(url, sizeof(url), "%.*s/ajax/server?get=%s", SITE_URL_MAX - 1, site, link_id);
+	if (fetch(ctx, url, site_referer, 1, &body, &len) != 0) {
 		logf_append(out, "fail=server_fetch ");
 		return -1;
 	}
@@ -317,7 +318,7 @@ static int try_server(resolve_fetch_fn fetch, void *ctx, const char *link_id,
 	if (s && (s[-1] == '?' || s[-1] == '&'))
 		snprintf(s_param, sizeof(s_param), "%.*s", (int)strcspn(s + 2, "&"), s + 2);
 
-	if (fetch(ctx, embed, SITE_REFERER, 0, &body, &len) != 0) {
+	if (fetch(ctx, embed, site_referer, 0, &body, &len) != 0) {
 		logf_append(out, "fail=embed_fetch ");
 		return -1;
 	}
@@ -376,12 +377,31 @@ const char *resolve_stream(resolve_fetch_fn fetch, void *ctx, const char *ids, c
 	char url[RESOLVE_URL_MAX + ID_MAX];
 	char *body = NULL;
 	size_t len;
+	char sites[SITES_MAX][SITE_URL_MAX], site_referer[SITE_URL_MAX + 2];
+	const char *site = NULL;
 
 	memset(out, 0, sizeof(*out));
 
-	snprintf(url, sizeof(url), SITE "/ajax/server/list?servers=%s", ids);
-	if (fetch(ctx, url, SITE_REFERER, 1, &body, &len) != 0)
+	/* The ids only mean this episode on the kind of site that listed it, so only those are asked. */
+	int site_count = sites_list(options->layout, sites, SITES_MAX);
+	for (int i = 0; i < site_count && !site; i++) {
+		snprintf(url, sizeof(url), "%.*s/ajax/server/list?servers=%s", SITE_URL_MAX - 1, sites[i], ids);
+		snprintf(site_referer, sizeof(site_referer), "%.*s/", SITE_URL_MAX - 1, sites[i]);
+		if (fetch(ctx, url, site_referer, 1, &body, &len) != 0)
+			continue;
+		/* A parked or seized domain answers with a page, not the site's JSON. */
+		if (!strstr(body, "\"status\": 200") && !strstr(body, "\"status\":200")) {
+			logf_append(out, "skip=%s ", sites[i]);
+			free(body);
+			body = NULL;
+			continue;
+		}
+		site = sites[i];
+		sites_worked(site);
+	}
+	if (!site)
 		return "server_list";
+	logf_append(out, "site=%s ", site);
 	json_unescape(body);
 
 	/* One kind of server: the section runs from data-type="..." to the next data-type. */
@@ -405,13 +425,22 @@ const char *resolve_stream(resolve_fetch_fn fetch, void *ctx, const char *ids, c
 			break;
 		const char *close = strchr(p, '>');
 		if (close) {
+			/* Anikoto: <li ...>HD-1</li>; AnimeSuge: <div ...> <div><span>HD-1</span>. */
 			const char *name = close + 1;
-			while (*name == ' ' || *name == '\n' || *name == '\t' || *name == '\r')
-				name++;
+			for (;;) {
+				while (*name == ' ' || *name == '\n' || *name == '\t' || *name == '\r')
+					name++;
+				if (*name != '<' || name[1] == '/')
+					break;
+				const char *tag_close = strchr(name, '>');
+				if (!tag_close)
+					break;
+				name = tag_close + 1;
+			}
 			snprintf(out->server, sizeof(out->server), "%.*s", (int)strcspn(name, "<\r\n"), name);
 		}
 		logf_append(out, "try=%s ", out->server);
-		int outcome = try_server(fetch, ctx, link_id, options, out);
+		int outcome = try_server(fetch, ctx, site, link_id, options, out);
 		if (outcome == 0) {
 			logf_append(out, "chose=%dx%d ", out->width, out->height);
 			free(body);

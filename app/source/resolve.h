@@ -14,6 +14,7 @@ struct resolve_options {
 	int target_height;  /* the tallest version at or under this; else the shortest up to 720p */
 	int want_dub;       /* use the dub servers */
 	int allow_too_tall; /* with nothing playable, take the shortest anyway */
+	int layout;         /* the kind of site (sites.h) whose episode list gave the ids */
 };
 
 struct resolved_stream {
@@ -27,7 +28,9 @@ struct resolved_stream {
 	char log[RESOLVE_LOG_MAX];
 };
 
-/* Follow an episode's server IDs to a stream the decoder can play, trying each server. Returns NULL on success, or a short failure reason. */
+/* Follow an episode's server IDs to a stream the decoder can play, trying each server. The ids are
+ * asked only of sites of options->layout, whose episode list gave them. Returns NULL on success, or
+ * a short failure reason. */
 const char *resolve_stream(resolve_fetch_fn fetch, void *ctx, const char *ids, const struct resolve_options *options,
                            struct resolved_stream *out);
 

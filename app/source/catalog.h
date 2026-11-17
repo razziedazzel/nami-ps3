@@ -51,15 +51,20 @@ struct episode {
 	int has_sub, has_dub;
 };
 
+/* Each parser takes the layout (LAYOUT_ANIKOTO or LAYOUT_SUGE, see sites.h) of the site the page came from.
+ * Ids are the site's own; see sites.h for how the app keeps them apart. */
+
 /* Fill items from a /filter page. Returns how many were found. */
-int catalog_parse_list(const char *html, struct anime_item *items, int max);
-/* Fill details from a show's /watch page. Returns 0 if it looks like one. */
-int catalog_parse_details(const char *html, struct anime_details *out);
+int catalog_parse_list(const char *html, int layout, struct anime_item *items, int max);
+/* Fill details from a show's page. Returns 0 if it looks like one. */
+int catalog_parse_details(const char *html, int layout, struct anime_details *out);
 /* Fill episodes from the unescaped result of /ajax/episode/list. Returns how many were found. */
-int catalog_parse_episodes(const char *html, struct episode *episodes, int max);
+int catalog_parse_episodes(const char *html, int layout, struct episode *episodes, int max);
 /* Fill seasons from the unescaped result of /api/seasons. Returns how many were found. */
-int catalog_parse_seasons(const char *html, struct season *seasons, int max);
+int catalog_parse_seasons(const char *html, int layout, struct season *seasons, int max);
 /* Undo JSON string escapes in place. */
 void catalog_json_unescape(char *s);
+/* Whether two titles are the same, ignoring case and spacing. */
+int catalog_same_title(const char *a, const char *b);
 
 #endif

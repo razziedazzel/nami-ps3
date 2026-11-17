@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "catalog.h"
+#include "sites.h"
 #include "config.h"
 #include "gfx.h"
 #include "http.h"
@@ -25,8 +26,6 @@
 #include "update.h"
 #include "video.h"
 
-#define SITE "https://anikototv.to"
-#define SITE_REFERER SITE "/"
 #define DATA_DIR APP_DIR "data/"
 #define PACKAGE_DIR "/dev_hdd0/packages/"
 #define UPDATE_MANIFEST_URL "https://github.com/razziedazzel/nami-ps3/releases/latest/download/latest.json"
@@ -175,6 +174,8 @@ static volatile u32 main_frames;
 static struct anime_item details_show;
 static volatile enum job_state details_state;
 static struct anime_details details;
+/* The kind of site the open show's episodes came from; their server ids only work there. */
+static int details_layout;
 static struct episode *episodes;
 static volatile int episode_count;
 /* An episode, or one of the buttons on the left. */
@@ -517,7 +518,7 @@ static void load_poster(struct http_client *http, struct anime_item *it, u32 *te
 	}
 	char *body = NULL;
 	size_t len = 0;
-	if (http_get(http, it->poster_url, SITE_REFERER, 0, &body, &len) != 0) {
+	if (http_get(http, it->poster_url, NULL, 0, &body, &len) != 0) {
 		it->poster_state = POSTER_FAILED;
 		return;
 	}
@@ -637,42 +638,131 @@ static const char *failure_text(const char *reason)
 	return "This episode couldn't be played.";
 }
 
+/* A path that's the same on every kind of site. */
+static int same_path(void *ctx, int layout, const char *site, char *path, size_t size)
+{
+	(void)layout;
+	(void)site;
+	snprintf(path, size, "%s", (const char *)ctx);
+	return 1;
+}
+
+struct show_lookup {
+	struct http_client *http;
+	const char *slug, *title;
+	int home; /* the kind of site the show's id and slug are from */
+};
+
+/* A show's page: /watch/<slug> on Anikoto, /anime/<slug> on AnimeSuge. On the other kind of site,
+ * the show is looked up there first (its slug may differ). */
+static int show_page_path(void *ctx, int layout, const char *site, char *path, size_t size)
+{
+	struct show_lookup *l = ctx;
+	char slug[SITE_SLUG_MAX];
+	if (layout == l->home)
+		snprintf(slug, sizeof(slug), "%s", l->slug);
+	else if (sites_find_show(l->http, site, layout, l->slug, l->title, slug, sizeof(slug)) != 0)
+		return 0;
+	sites_show_path(slug, layout, path, size);
+	return 1;
+}
+
+static int same_slug(const char *watch_url, const char *slug)
+{
+	char other[SITE_SLUG_MAX];
+	return sites_slug(watch_url, other, sizeof(other)) == 0 && strcmp(other, slug) == 0;
+}
+
+/* The app's id for a show a site gave as native (see sites.h): the one history or My List already
+ * uses for it (same slug, or same title), else the site's own, tagged "s" if from AnimeSuge.
+ * out may be native. */
+static void app_show_id(const char *watch_url, const char *title, const char *native, int layout, char *out,
+                        size_t size)
+{
+	char slug[SITE_SLUG_MAX], own[ITEM_ID_MAX];
+	snprintf(own, sizeof(own), "%s%s", layout == LAYOUT_SUGE ? "s" : "", native);
+	int have_slug = sites_slug(watch_url, slug, sizeof(slug)) == 0;
+	for (int pass = 0; pass < 2; pass++) {
+		for (int i = 0; i < history_count; i++)
+			if (history[i].show.id[0] && (pass ? catalog_same_title(history[i].show.title, title)
+			                                   : have_slug && same_slug(history[i].show.watch_url, slug))) {
+				snprintf(out, size, "%s", history[i].show.id);
+				return;
+			}
+		for (int i = 0; i < mylist_count; i++)
+			if (mylist[i].id[0] && (pass ? catalog_same_title(mylist[i].title, title)
+			                             : have_slug && same_slug(mylist[i].watch_url, slug))) {
+				snprintf(out, size, "%s", mylist[i].id);
+				return;
+			}
+	}
+	snprintf(out, size, "%s", own);
+}
+
+/* Fetch a /filter page from whichever site answers and read its shows, with the app's ids. */
+static int load_list(struct http_client *http, const char *path, struct anime_item *items, int max)
+{
+	char *body = NULL, site[SITE_URL_MAX];
+	size_t len;
+	if (sites_get(http, LAYOUT_ANY, same_path, (void *)path, 0, &body, &len, site) != 0)
+		return -1;
+	int layout = sites_layout_of(site);
+	int count = catalog_parse_list(body, layout, items, max);
+	free(body);
+	for (int i = 0; i < count; i++)
+		app_show_id(items[i].watch_url, items[i].title, items[i].id, layout, items[i].id, sizeof(items[i].id));
+	return count;
+}
+
 static void load_details(struct http_client *http)
 {
-	char url[256];
+	char path[256], slug[SITE_SLUG_MAX], site[SITE_URL_MAX] = "", native[ITEM_ID_MAX] = "";
 	char *body = NULL;
 	size_t len;
 	int ok = 0;
 
 	season_count = 0;
-	if (http_get(http, details_show.watch_url, SITE_REFERER, 0, &body, &len) == 0) {
-		ok = catalog_parse_details(body, &details) == 0;
+	episode_count = 0;
+	/* Saved shows may name a site that's gone; the slug finds the show on any of them. */
+	struct show_lookup lookup = {http, slug, details_show.title,
+	                             sites_home_layout(details_show.id, details_show.watch_url)};
+	if (sites_slug(details_show.watch_url, slug, sizeof(slug)) == 0 &&
+	    sites_get(http, LAYOUT_ANY, show_page_path, &lookup, 0, &body, &len, site) == 0) {
+		details_layout = sites_layout_of(site);
+		ok = catalog_parse_details(body, details_layout, &details) == 0;
 		free(body);
 	}
-	episode_count = 0;
+	/* The page has this site's own id, which the requests below need; the app keeps its own id. */
+	if (ok) {
+		snprintf(native, sizeof(native), "%s", details.id);
+		ok = native[0] != 0;
+	}
 	/* Opened from a season link, the show is known only by its address until now. */
 	if (ok && !details_show.id[0]) {
-		snprintf(details_show.id, sizeof(details_show.id), "%s", details.id);
+		/* The page's title: a season link carries the first season's. */
+		app_show_id(details_show.watch_url, details.title, native, details_layout, details_show.id,
+		            sizeof(details_show.id));
 		snprintf(details_show.title, sizeof(details_show.title), "%s", details.title);
-		ok = details_show.id[0] != 0;
 	}
 	if (ok && !details_show.poster_url[0])
 		snprintf(details_show.poster_url, sizeof(details_show.poster_url), "%s", details.poster_url);
 	if (ok) {
-		snprintf(url, sizeof(url), SITE "/api/seasons/%s", details_show.id);
-		if (http_get(http, url, SITE_REFERER, 1, &body, &len) == 0) {
+		/* Only sites of the same kind share these ids. */
+		snprintf(path, sizeof(path), "/api/seasons/%s", native);
+		if (sites_get(http, details_layout, same_path, path, 1, &body, &len, NULL) == 0) {
 			catalog_json_unescape(body);
-			season_count = catalog_parse_seasons(body, seasons, SEASONS_MAX);
+			season_count = catalog_parse_seasons(body, details_layout, seasons, SEASONS_MAX);
 			free(body);
 		}
-		snprintf(url, sizeof(url), SITE "/ajax/episode/list/%s", details_show.id);
-		if (http_get(http, url, SITE_REFERER, 1, &body, &len) == 0) {
+		snprintf(path, sizeof(path), "/ajax/episode/list/%s", native);
+		if (sites_get(http, details_layout, same_path, path, 1, &body, &len, NULL) == 0) {
 			catalog_json_unescape(body);
-			episode_count = catalog_parse_episodes(body, episodes, EPISODES_MAX);
+			episode_count = catalog_parse_episodes(body, details_layout, episodes, EPISODES_MAX);
 			free(body);
 		}
 	}
-	app_log("details %s ok=%d episodes=%d seasons=%d\n", details_show.id, ok, episode_count, season_count);
+	app_log("details %s (%s %s) ok=%d episodes=%d seasons=%d\n", details_show.id, site, native, ok, episode_count,
+	        season_count);
 	details_state = ok ? JOB_READY : JOB_FAILED;
 	if (ok && details_show.poster_state != POSTER_READY && details_show.poster_url[0])
 		load_poster(http, &details_show, details_texture);
@@ -688,8 +778,7 @@ static void load_search(struct http_client *http)
 {
 	char url[QUERY_MAX * 3 + 64], encoded[QUERY_MAX * 3];
 	char query[QUERY_MAX];
-	char *body = NULL;
-	size_t len, n = 0;
+	size_t n = 0;
 	struct row *row = &rows[ROW_SEARCH];
 
 	snprintf(query, sizeof(query), "%s", search_requested);
@@ -705,13 +794,12 @@ static void load_search(struct http_client *http)
 	}
 	encoded[n] = 0;
 
-	snprintf(url, sizeof(url), SITE "/filter?keyword=%s&page=1", encoded);
-	if (http_get(http, url, SITE_REFERER, 0, &body, &len) != 0) {
+	snprintf(url, sizeof(url), "/filter?keyword=%s&page=1", encoded);
+	int count = load_list(http, url, search_results, ROW_ITEMS_MAX);
+	if (count < 0) {
 		search_state = JOB_FAILED;
 		return;
 	}
-	int count = catalog_parse_list(body, search_results, ROW_ITEMS_MAX);
-	free(body);
 
 	/* Swapped in all at once, so the old results stay up until the new ones are ready. */
 	row->count = 0;
@@ -736,20 +824,20 @@ static void loader_thread(void *arg)
 		sysThreadExit(0);
 	}
 
+	/* Picks up new Anikoto addresses once a day. */
+	sites_refresh(http, 0);
 	for (int d = 0; d < SITE_ROWS && running; d++) {
 		struct row *row = &rows[ROW_SITE_FIRST + d];
 		char url[256];
-		char *body = NULL;
-		size_t len;
-		snprintf(url, sizeof(url), SITE "/filter?keyword=&%s&page=1", row_defs[d].query);
-		if (http_get(http, url, SITE_REFERER, 0, &body, &len) != 0) {
+		snprintf(url, sizeof(url), "/filter?keyword=&%s&page=1", row_defs[d].query);
+		int count = load_list(http, url, row->items, ROW_ITEMS_MAX);
+		if (count < 0) {
 			row->state = ROW_FAILED;
 			continue;
 		}
-		row->count = catalog_parse_list(body, row->items, ROW_ITEMS_MAX);
+		row->count = count;
 		row->state = row->count > 0 ? ROW_READY : ROW_FAILED;
 		app_log("row %s items=%d\n", row_defs[d].title, row->count);
-		free(body);
 	}
 
 	while (running) {
@@ -1628,6 +1716,7 @@ static void start_episode(int index, float seconds)
 	options.target_height = settings.quality;
 	options.want_dub = detail_want_dub;
 	options.allow_too_tall = settings.experimental_1080;
+	options.layout = details_layout;
 	player_episode = index;
 	player_ended = 0;
 	player_countdown = 0;
@@ -2445,6 +2534,7 @@ int main(void)
 		return 1;
 
 	store_init(DATA_DIR);
+	sites_init(DATA_DIR);
 
 	if (gfx_init() != 0 || make_poster_textures() != 0) {
 		app_log("graphics setup failed\n");
